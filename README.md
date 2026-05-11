@@ -89,7 +89,7 @@ async def main():
     print(response.choices[0].message.content)
 
     # Every call is now recorded to SQLite
-    steps = await storage.get_steps_for_run(tethered._run_id)
+    steps = await storage.get_steps_for_run(tethered.run_id)
     print(f"Captured {len(steps)} step(s)")
     print(f"Cost: ${steps[0].cost_usd}")
 
@@ -132,17 +132,15 @@ Early development — v0.1 is the capture layer; replay and durable execution ar
 
 ## Installation
 
-```bash
-pip install tether-py
-```
-
-Or from source:
+Install from source (recommended for v0.1):
 
 ```bash
 git clone https://github.com/patibandlavenkatamanideep/Tether
-cd tether
+cd Tether
 pip install -e ".[dev]"
 ```
+
+PyPI release planned for v0.2 alongside the Anthropic wrapper and async client.
 
 ## License
 
