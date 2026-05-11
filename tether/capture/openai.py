@@ -166,6 +166,11 @@ class TetheredOpenAI:
         self._run_initialized = False
         self.chat = _ChatNamespace(self)
 
+    @property
+    def run_id(self) -> UUID | None:
+        """The UUID of the current run, or None if no call has been made yet."""
+        return self._run_id
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
