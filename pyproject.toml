@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "tether-py"
 version = "0.1.0"
-description = "Durable execution for long-running LLM agents — captures every call, checkpoints state, recovers from failures."
+description = "Trace capture and replay layer for production LLM evaluation — persists every call to SQLite for replay-based cost-vs-quality analysis."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Venkata Manideep Patibandla", email = "venkatamanideep20@gmail.com" }]
@@ -41,9 +41,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/venkatamanideep/tether"
-Repository = "https://github.com/venkatamanideep/tether"
-Issues = "https://github.com/venkatamanideep/tether/issues"
+Homepage = "https://github.com/patibandlavenkatamanideep/Tether"
+Repository = "https://github.com/patibandlavenkatamanideep/Tether"
+Issues = "https://github.com/patibandlavenkatamanideep/Tether/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tether"]
