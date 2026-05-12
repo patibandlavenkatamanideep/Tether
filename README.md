@@ -38,12 +38,12 @@ Tether is the capture layer of a three-project evaluation stack:
 Your app ──► Tether (capture) ──► SQLite trace store
                                           │
                                           ▼
-                                 CostGuard /evaluate
+                                 CostGuard /replay
                                  (RDAB-grounded scoring)
                                           │
                                           ▼
                                  Cost-vs-quality report
-                                 with bootstrap CI
+                                 with 95% bootstrap CI
 ```
 
 - **[RealDataAgentBench](https://github.com/patibandlavenkatamanideep/RealDataAgentBench)**
@@ -57,9 +57,10 @@ Your app ──► Tether (capture) ──► SQLite trace store
   of every LLM call, enabling replay-based evaluation against alternate
   models.
 
-The integration unlocks a capability no single repo provides alone:
-statistically grounded cost-routing recommendations against real
-production traffic, rather than synthetic benchmarks.
+The integration is live: point CostGuard's `POST /replay` at a Tether
+SQLite database and it replays every captured prompt against any
+alternate model, returning a quality delta and 95% bootstrap CI in one
+call. No synthetic benchmarks — your real production traffic.
 
 ## Quickstart
 
@@ -96,13 +97,15 @@ async def main():
 asyncio.run(main())
 ```
 
-## What's working in v0.1 (capture layer)
+## What's working in v0.1
 
 - **`TetheredOpenAI`** — drop-in wrapper for `openai.OpenAI`. Zero code changes beyond construction.
 - **SQLite capture** — every `chat.completions.create` call recorded with full inputs, outputs, token counts, cost, and latency. WAL mode for safe concurrent reads.
 - **Cost tracking** — Decimal-precision cost calculation for `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`.
 - **Error recording** — provider errors (429, 5xx) captured as `FailureRecord` rows before being re-raised. Failures are part of the trace, not invisible.
 - **Pydantic v2 models** — `Run`, `Step`, `Checkpoint`, `FailureRecord` with strict typing and UTC-aware datetimes.
+- **`run_id` property** — `tethered.run_id` exposes the UUID after the first call; pass it directly to CostGuard's `/replay` endpoint.
+- **CostGuard replay integration** — CostGuard reads Tether SQLite files directly via a schema-level adapter (`tether_reader.py`). No Tether package dependency on the CostGuard side. Pass `tether_db_path` + `run_id` to `POST /replay` to compare any two models with a 95% bootstrap CI.
 
 ## Roadmap
 
@@ -112,10 +115,10 @@ asyncio.run(main())
 - Anthropic wrapper — `TetheredAnthropic` with identical API surface.
 - Format adapter — translate between OpenAI and Anthropic message formats for cross-provider replay.
 
-**Replay and evaluation (the integration story):**
-- CostGuard integration — feed captured traces into CostGuard's /evaluate endpoint for RDAB-grounded scoring.
-- Replay engine — re-run captured prompts against alternate models with statistical comparison reports.
-- Bootstrap CI on quality deltas — statistical significance testing for routing decisions.
+**Replay and evaluation (live):**
+- ✅ CostGuard `/replay` integration — Tether SQLite → `POST /replay` → quality delta + 95% bootstrap CI + cost savings.
+- ✅ Replay engine — prompts replayed against any alternate model in CostGuard's pricing catalogue.
+- ✅ Bootstrap CI on quality deltas — `scipy.stats.bootstrap` with 1,000 resamples, percentile method.
 
 **Durable execution (longer-term):**
 - Recovery engine — automatic retry with exponential backoff, provider swap (OpenAI ↔ Anthropic) on persistent failures.
@@ -128,7 +131,7 @@ asyncio.run(main())
 
 ## Status
 
-Early development — v0.1 is the capture layer; replay and durable execution are on the roadmap. APIs will change. Not yet suitable for production use.
+v0.1 — capture layer complete and integrated with CostGuard `/replay`. Replay-based cost-vs-quality comparison is live. Durable execution (checkpointing, provider failover, streaming) is on the roadmap. APIs will change. Not yet suitable for production use.
 
 ## Installation
 
