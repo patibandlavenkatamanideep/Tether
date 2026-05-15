@@ -1,5 +1,10 @@
 # Tether
 
+[![CI](https://github.com/patibandlavenkatamanideep/Tether/actions/workflows/ci.yml/badge.svg)](https://github.com/patibandlavenkatamanideep/Tether/actions)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Part of The Evaluation Stack](https://img.shields.io/badge/Evaluation%20Stack-RDAB%20%C2%B7%20CostGuard%20%C2%B7%20Tether-7c3aed)](https://github.com/patibandlavenkatamanideep/RealDataAgentBench)
+
 Trace capture and replay layer for production LLM evaluation.
 
 Tether wraps your LLM client (OpenAI today; Anthropic next) and persists
@@ -10,29 +15,11 @@ alternate models to measure cost-vs-quality tradeoffs with statistical
 confidence intervals.
 
 Durable execution (automatic recovery, provider failover, streaming)
-is on the roadmap (see below) — v0.1 is capture-only.
-
-## Why it matters
-
-LLM teams ship prompt and model changes blindly. They swap GPT-4o for
-GPT-4o-mini, change a system prompt, or add a tool, and discover quality
-regressions from customer tickets. The missing input is real production
-traffic in a form that can be replayed against alternate configurations.
-
-Tether captures every LLM call your application makes — prompt, response,
-tokens, cost, latency — in a queryable local SQLite database. Those
-captured traces are then re-playable: feed them into an evaluation pipeline
-(like CostGuard's /evaluate endpoint, backed by RealDataAgentBench scoring)
-to answer "what would have happened if I'd used the cheaper model?" with a
-bootstrap confidence interval, not a guess.
-
-Durable execution — automatic checkpointing, provider failover, streaming
-recovery — is the natural extension of the capture layer and is on the
-roadmap.
+is on the roadmap — v0.1 is capture-only.
 
 ## How This Fits With RDAB and CostGuard
 
-Tether is the capture layer of a three-project evaluation stack:
+Tether is the capture layer of The Evaluation Stack:
 
 ```
 Your app ──► Tether (capture) ──► SQLite trace store
@@ -46,9 +33,9 @@ Your app ──► Tether (capture) ──► SQLite trace store
                                  with 95% bootstrap CI
 ```
 
-- **[RealDataAgentBench](https://github.com/patibandlavenkatamanideep/RealDataAgentBench)**
+- **[RealDataAgentBench (RDAB)](https://github.com/patibandlavenkatamanideep/RealDataAgentBench)**
   is the benchmark methodology — 4-dimensional scoring (correctness, code
-  quality, efficiency, statistical validity), 1,412 runs across 12 models,
+  quality, efficiency, statistical validity), 1,412+ runs across 12 models,
   pre-registered experiments.
 - **[CostGuard](https://github.com/patibandlavenkatamanideep/CostGuard)**
   is the runtime — RDAB-grounded validity scoring on every proxy call,
@@ -61,6 +48,19 @@ The integration is live: point CostGuard's `POST /replay` at a Tether
 SQLite database and it replays every captured prompt against any
 alternate model, returning a quality delta and 95% bootstrap CI in one
 call. No synthetic benchmarks — your real production traffic.
+
+## Why it matters
+
+LLM teams ship prompt and model changes blindly. They swap GPT-4o for
+GPT-4o-mini, change a system prompt, or add a tool, and discover quality
+regressions from customer tickets. The missing input is real production
+traffic in a form that can be replayed against alternate configurations.
+
+Tether's integration with CostGuard `/replay` enables a concrete workflow:
+capture 25 calls on `gpt-4o-mini`, replay against `gpt-4.1-mini`, get a
+95% CI on the quality delta and the exact cost savings per call. That's
+the output of [`scripts/demo_replay.py`](https://github.com/patibandlavenkatamanideep/CostGuard/blob/main/scripts/demo_replay.py)
+in CostGuard — evidence, not a thought experiment.
 
 ## Quickstart
 
@@ -94,8 +94,22 @@ async def main():
     print(f"Captured {len(steps)} step(s)")
     print(f"Cost: ${steps[0].cost_usd}")
 
+    # Close storage before passing tether.db to CostGuard /replay
+    await storage.close()
+
 asyncio.run(main())
 ```
+
+Expected output:
+
+```
+Attention is a mechanism that allows a model to focus on...
+Captured 1 step(s)
+Cost: $0.0000215
+```
+
+Pass `tethered.run_id` and the path to `tether.db` directly to
+`POST /replay` in CostGuard to compare any two models on this traffic.
 
 ## What's working in v0.1
 
@@ -105,27 +119,24 @@ asyncio.run(main())
 - **Error recording** — provider errors (429, 5xx) captured as `FailureRecord` rows before being re-raised. Failures are part of the trace, not invisible.
 - **Pydantic v2 models** — `Run`, `Step`, `Checkpoint`, `FailureRecord` with strict typing and UTC-aware datetimes.
 - **`run_id` property** — `tethered.run_id` exposes the UUID after the first call; pass it directly to CostGuard's `/replay` endpoint.
-- **CostGuard replay integration** — CostGuard reads Tether SQLite files directly via a schema-level adapter (`tether_reader.py`). No Tether package dependency on the CostGuard side. Pass `tether_db_path` + `run_id` to `POST /replay` to compare any two models with a 95% bootstrap CI.
 
 ## Roadmap
 
-**Capture layer (near-term):**
+**Live in v0.1:**
+- ✅ CostGuard `/replay` integration — Tether SQLite → `POST /replay` → quality delta + 95% bootstrap CI + cost savings.
+- ✅ Replay engine — prompts replayed against any alternate model in CostGuard's pricing catalogue.
+- ✅ Bootstrap CI on quality deltas — `scipy.stats.bootstrap` with 1,000 resamples, percentile method.
+
+**Coming next (capture layer):**
 - Async client support — `AsyncTetheredOpenAI` for async-first codebases.
 - Streaming capture — transparent buffering and recording of streamed responses.
 - Anthropic wrapper — `TetheredAnthropic` with identical API surface.
 - Format adapter — translate between OpenAI and Anthropic message formats for cross-provider replay.
 
-**Replay and evaluation (live):**
-- ✅ CostGuard `/replay` integration — Tether SQLite → `POST /replay` → quality delta + 95% bootstrap CI + cost savings.
-- ✅ Replay engine — prompts replayed against any alternate model in CostGuard's pricing catalogue.
-- ✅ Bootstrap CI on quality deltas — `scipy.stats.bootstrap` with 1,000 resamples, percentile method.
-
-**Durable execution (longer-term):**
+**Long-term roadmap (durable execution):**
 - Recovery engine — automatic retry with exponential backoff, provider swap (OpenAI ↔ Anthropic) on persistent failures.
 - Checkpoint manager — configurable checkpoint frequency, compression, optional S3 upload.
 - Budget enforcement — hard stop when `cost_usd` exceeds `monthly_budget`.
-
-**Observability:**
 - LangChain integration — `TetherCallbackHandler` for LangChain agents.
 - Dashboard — local web UI to inspect runs, steps, and costs.
 
@@ -148,3 +159,9 @@ PyPI release planned for v0.2 alongside the Anthropic wrapper and async client.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+Built by [Venkata Manideep Patibandla](https://venkatamanideep.com) · [LinkedIn](https://linkedin.com/in/manideep-analytics) · [GitHub](https://github.com/patibandlavenkatamanideep)
+
+Part of The Evaluation Stack: [RDAB](https://github.com/patibandlavenkatamanideep/RealDataAgentBench) · [CostGuard](https://github.com/patibandlavenkatamanideep/CostGuard) · [Tether](https://github.com/patibandlavenkatamanideep/Tether)
