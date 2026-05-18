@@ -1,6 +1,7 @@
 # Tether
 
 [![CI](https://github.com/patibandlavenkatamanideep/Tether/actions/workflows/ci.yml/badge.svg)](https://github.com/patibandlavenkatamanideep/Tether/actions)
+[![73 tests passing](https://img.shields.io/badge/tests-73%20passing-brightgreen)](https://github.com/patibandlavenkatamanideep/Tether/actions)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Part of The Evaluation Stack](https://img.shields.io/badge/Evaluation%20Stack-RDAB%20%C2%B7%20CostGuard%20%C2%B7%20Tether-7c3aed)](https://github.com/patibandlavenkatamanideep/RealDataAgentBench)
@@ -51,10 +52,12 @@ call. No synthetic benchmarks — your real production traffic.
 
 ## Why it matters
 
-LLM teams ship prompt and model changes blindly. They swap GPT-4o for
-GPT-4o-mini, change a system prompt, or add a tool, and discover quality
-regressions from customer tickets. The missing input is real production
-traffic in a form that can be replayed against alternate configurations.
+Building RDAB and CostGuard, I kept running into the same problem: teams
+swap models based on benchmark scores from synthetic tasks, not their own
+production traffic. They move to GPT-4o-mini because it's cheaper, find
+out from customer tickets that something regressed, and have no data to
+explain what changed or why. The missing input is always the same — real
+calls, in a form that can be replayed.
 
 Tether's integration with CostGuard `/replay` enables a concrete workflow:
 capture 25 calls on `gpt-4o-mini`, replay against `gpt-4.1-mini`, get a
@@ -75,7 +78,7 @@ async def main():
     await storage.initialize()
 
     # Wrap your existing OpenAI client — zero changes to the rest of your code
-    client = OpenAI(api_key="sk-...")
+    client = OpenAI()  # uses OPENAI_API_KEY from environment
     tethered = TetheredOpenAI(
         client=client,
         storage=storage,
