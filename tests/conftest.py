@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
-from decimal import Decimal
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -76,6 +73,111 @@ def mock_openai_client() -> MagicMock:
     }
 
     client.chat.completions.create.return_value = completion
+    return client
+
+
+@pytest.fixture
+def mock_anthropic_client() -> MagicMock:
+    """Return a MagicMock that mimics anthropic.Anthropic with a realistic response."""
+    client = MagicMock()
+
+    content_block = MagicMock()
+    content_block.type = "text"
+    content_block.text = "Hello! I am a mock Claude response."
+
+    usage = MagicMock()
+    usage.input_tokens = 12
+    usage.output_tokens = 8
+
+    message = MagicMock()
+    message.id = f"msg_{uuid4().hex[:12]}"
+    message.type = "message"
+    message.role = "assistant"
+    message.model = "claude-sonnet-4-6"
+    message.content = [content_block]
+    message.usage = usage
+    message.stop_reason = "end_turn"
+    message.model_dump.return_value = {
+        "id": message.id,
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-6",
+        "content": [{"type": "text", "text": content_block.text}],
+        "usage": {"input_tokens": 12, "output_tokens": 8},
+        "stop_reason": "end_turn",
+    }
+
+    client.messages.create.return_value = message
+    return client
+
+
+@pytest.fixture
+def mock_async_openai_client() -> MagicMock:
+    """Return a MagicMock that mimics openai.AsyncOpenAI."""
+    client = MagicMock()
+
+    message = MagicMock()
+    message.content = "Hello! I am a mock async LLM response."
+    message.role = "assistant"
+
+    choice = MagicMock()
+    choice.index = 0
+    choice.message = message
+    choice.finish_reason = "stop"
+
+    usage = MagicMock()
+    usage.prompt_tokens = 15
+    usage.completion_tokens = 10
+    usage.total_tokens = 25
+
+    completion = MagicMock()
+    completion.id = f"chatcmpl-{uuid4().hex[:12]}"
+    completion.model = "gpt-4o-mini"
+    completion.choices = [choice]
+    completion.usage = usage
+    completion.model_dump.return_value = {
+        "id": completion.id,
+        "model": "gpt-4o-mini",
+        "choices": [{"message": {"role": "assistant", "content": message.content}}],
+        "usage": {"prompt_tokens": 15, "completion_tokens": 10, "total_tokens": 25},
+    }
+
+    client.chat.completions.create = AsyncMock(return_value=completion)
+    return client
+
+
+@pytest.fixture
+def mock_async_anthropic_client() -> MagicMock:
+    """Return a MagicMock that mimics anthropic.AsyncAnthropic."""
+    client = MagicMock()
+
+    content_block = MagicMock()
+    content_block.type = "text"
+    content_block.text = "Hello! I am a mock async Claude response."
+
+    usage = MagicMock()
+    usage.input_tokens = 12
+    usage.output_tokens = 8
+
+    message = MagicMock()
+    message.id = f"msg_{uuid4().hex[:12]}"
+    message.type = "message"
+    message.role = "assistant"
+    message.model = "claude-sonnet-4-6"
+    message.content = [content_block]
+    message.usage = usage
+    message.stop_reason = "end_turn"
+    message.model_dump.return_value = {
+        "id": message.id,
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-6",
+        "content": [{"type": "text", "text": content_block.text}],
+        "usage": {"input_tokens": 12, "output_tokens": 8},
+        "stop_reason": "end_turn",
+    }
+
+    client.messages.create = AsyncMock(return_value=message)
     return client
 
 

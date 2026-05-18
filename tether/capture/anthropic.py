@@ -1,27 +1,32 @@
-"""TetheredOpenAI / AsyncTetheredOpenAI — OpenAI client wrappers.
+"""TetheredAnthropic / AsyncTetheredAnthropic — Anthropic client wrappers.
 
-Every chat.completions.create call is intercepted, recorded to SQLite,
-and then forwarded to the real OpenAI client. The return value is the
-unchanged OpenAI response object, so existing code requires zero changes.
+Mirror the TetheredOpenAI pattern exactly. Every messages.create call is
+intercepted, recorded to SQLite, and then forwarded to the real Anthropic
+client. The return value is the unchanged Anthropic response object.
 
-TODO(v0.3): Add streaming response capture (buffer chunks, store full response,
-            return a re-yielding wrapper that is transparent to callers).
-
-Usage:
-    from openai import OpenAI
-    from tether import TetheredOpenAI, SQLiteStorage
+Usage (sync):
+    from anthropic import Anthropic
+    from tether import TetheredAnthropic, SQLiteStorage
 
     storage = SQLiteStorage("agent.db")
     await storage.initialize()
 
-    client = OpenAI(api_key="...")
-    tethered = TetheredOpenAI(client=client, storage=storage, run_name="my_agent")
+    client = Anthropic()  # uses ANTHROPIC_API_KEY from environment
+    tethered = TetheredAnthropic(client=client, storage=storage, run_name="my_agent")
 
-    response = tethered.chat.completions.create(
-        model="gpt-4o",
+    response = tethered.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
         messages=[{"role": "user", "content": "Hello"}],
     )
-    print(response.choices[0].message.content)
+    print(response.content[0].text)
+
+Usage (async):
+    from anthropic import AsyncAnthropic
+    from tether import AsyncTetheredAnthropic, SQLiteStorage
+
+    tethered = AsyncTetheredAnthropic(client=AsyncAnthropic(), storage=storage, ...)
+    response = await tethered.messages.create(model="claude-sonnet-4-6", ...)
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from threading import Lock
 from typing import Any
 from uuid import UUID
 
-import openai
+import anthropic
 
 from tether.core.logging import get_logger
 from tether.core.models import (
@@ -52,31 +57,28 @@ log = get_logger(__name__)
 
 # Pricing in USD per 1K tokens: {model: (input_per_1k, output_per_1k)}
 _PRICING: dict[str, tuple[Decimal, Decimal]] = {
-    "gpt-4o": (Decimal("0.0025"), Decimal("0.01")),
-    "gpt-4o-mini": (Decimal("0.00015"), Decimal("0.0006")),
-    "gpt-4-turbo": (Decimal("0.01"), Decimal("0.03")),
+    "claude-opus-4-6": (Decimal("0.015"), Decimal("0.075")),
+    "claude-sonnet-4-6": (Decimal("0.003"), Decimal("0.015")),
+    "claude-haiku-4-5": (Decimal("0.00025"), Decimal("0.00125")),
+    "claude-haiku-4-5-20251001": (Decimal("0.00025"), Decimal("0.00125")),
+    # Prior generation
+    "claude-3-5-sonnet-20241022": (Decimal("0.003"), Decimal("0.015")),
+    "claude-3-5-haiku-20241022": (Decimal("0.001"), Decimal("0.005")),
+    "claude-3-opus-20240229": (Decimal("0.015"), Decimal("0.075")),
+    "claude-3-haiku-20240307": (Decimal("0.00025"), Decimal("0.00125")),
 }
-_DEFAULT_PRICING = (Decimal("0.01"), Decimal("0.03"))
+_DEFAULT_PRICING = (Decimal("0.003"), Decimal("0.015"))  # sonnet-tier fallback
 
 
 def _compute_cost(model: str, input_tokens: int, output_tokens: int) -> Decimal:
-    """Calculate estimated cost in USD for a completion.
-
-    Args:
-        model: OpenAI model identifier string.
-        input_tokens: Number of prompt tokens consumed.
-        output_tokens: Number of completion tokens generated.
-
-    Returns:
-        Estimated cost as a Decimal (never float — avoids precision drift).
-    """
+    """Calculate estimated cost in USD for an Anthropic messages call."""
     if model not in _PRICING:
         log.warning(
             "unknown_model_pricing",
             model=model,
             fallback_input=str(_DEFAULT_PRICING[0]),
             fallback_output=str(_DEFAULT_PRICING[1]),
-            advice="Add this model to tether/capture/openai.py _PRICING table.",
+            advice="Add this model to tether/capture/anthropic.py _PRICING table.",
         )
     input_rate, output_rate = _PRICING.get(model, _DEFAULT_PRICING)
     return (Decimal(input_tokens) / Decimal(1000)) * input_rate + (
@@ -84,74 +86,51 @@ def _compute_cost(model: str, input_tokens: int, output_tokens: int) -> Decimal:
     ) * output_rate
 
 
-class _CompletionsNamespace:
-    """Mirrors openai.resources.chat.completions for the tethered client.
+# ---------------------------------------------------------------------------
+# Sync wrapper
+# ---------------------------------------------------------------------------
 
-    This is an internal class — users access it via ``TetheredOpenAI.chat.completions``.
-    """
 
-    def __init__(self, owner: TetheredOpenAI) -> None:
+class _MessagesNamespace:
+    """Mirrors anthropic.resources.Messages for the tethered sync client."""
+
+    def __init__(self, owner: TetheredAnthropic) -> None:
         self._owner = owner
 
     def create(self, **kwargs: Any) -> Any:
-        """Record and forward a chat completion request.
-
-        Accepts the same keyword arguments as ``openai.OpenAI().chat.completions.create``.
-        The response is returned unchanged.
-
-        Args:
-            **kwargs: All arguments forwarded verbatim to the underlying OpenAI client.
-
-        Returns:
-            The raw ``ChatCompletion`` object from the OpenAI SDK.
-
-        Raises:
-            RateLimitError: If the provider returns a 429 response.
-            CaptureError: If the provider returns any other error.
-        """
-        return self._owner._run_sync(self._owner._create_completion(**kwargs))
+        """Record and forward a messages.create request."""
+        return self._owner._run_sync(self._owner._create_message(**kwargs))
 
 
-class _ChatNamespace:
-    """Mirrors ``openai.OpenAI().chat`` for the tethered client."""
+class TetheredAnthropic:
+    """Drop-in Anthropic client wrapper that records every LLM call to SQLite.
 
-    def __init__(self, owner: TetheredOpenAI) -> None:
-        self.completions = _CompletionsNamespace(owner)
-
-
-class TetheredOpenAI:
-    """Drop-in OpenAI client wrapper that records every LLM call to SQLite.
-
-    Wrap your existing ``openai.OpenAI`` instance and use ``TetheredOpenAI``
-    exactly as you would the original — the return values and exceptions are
-    identical. Tether adds zero latency from the caller's perspective beyond
-    the SQLite write (typically < 1 ms).
+    Use exactly as you would ``anthropic.Anthropic`` — the return values and
+    exceptions are identical. Pair with CostGuard ``POST /replay`` to compare
+    production Claude traffic against alternate models with bootstrap CIs.
 
     Args:
-        client: An initialized ``openai.OpenAI`` instance.
+        client: An initialized ``anthropic.Anthropic`` instance.
         storage: An initialized ``SQLiteStorage`` instance.
         run_name: Human-readable label for this agent run.
-        run_id: Optional existing run UUID to resume. If None, a new Run is
-                created on the first call.
+        run_id: Optional existing run UUID to resume.
 
     Example:
-        storage = SQLiteStorage("agent.db")
-        await storage.initialize()
-
-        tethered = TetheredOpenAI(
-            client=OpenAI(api_key="..."),
+        tethered = TetheredAnthropic(
+            client=Anthropic(),
             storage=storage,
             run_name="research_agent_v1",
         )
-        response = tethered.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": "Summarise quantum entanglement"}],
+        response = tethered.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": "Summarise attention mechanisms"}],
         )
     """
 
     def __init__(
         self,
-        client: openai.OpenAI,
+        client: anthropic.Anthropic,
         storage: SQLiteStorage,
         run_name: str,
         run_id: UUID | None = None,
@@ -162,34 +141,22 @@ class TetheredOpenAI:
         self._run_id: UUID | None = run_id
         self._sequence_lock = Lock()
         self._sequence_counter: int = 0
-        self._run_initialized = False
-        self.chat = _ChatNamespace(self)
+        self.messages = _MessagesNamespace(self)
 
     @property
     def run_id(self) -> UUID | None:
         """The UUID of the current run, or None if no call has been made yet."""
         return self._run_id
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _next_sequence_number(self) -> int:
-        """Return the next monotonic sequence number, thread-safely."""
         with self._sequence_lock:
             self._sequence_counter += 1
             return self._sequence_counter
 
     def _run_sync(self, coro: Any) -> Any:
-        """Execute a coroutine from synchronous context.
-
-        Tries to use an existing running event loop (Jupyter / nested async),
-        falling back to asyncio.run for plain scripts.
-        """
+        """Execute a coroutine from synchronous context."""
         try:
             asyncio.get_running_loop()
-            # We are inside an async context — run in a new thread to avoid
-            # blocking the event loop. This is safe for the storage I/O pattern.
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -199,13 +166,8 @@ class TetheredOpenAI:
             return asyncio.run(coro)
 
     async def _ensure_run(self) -> UUID:
-        """Create and persist the Run on the first call, then return its ID.
-
-        Subsequent calls return the cached ID immediately.
-        """
         if self._run_id is not None:
             return self._run_id
-
         run = Run.create(name=self._run_name)
         await self._storage.create_run(run)
         await self._storage.update_run_status(run.id, RunStatus.RUNNING)
@@ -213,30 +175,8 @@ class TetheredOpenAI:
         log.info("run_created", run_id=str(run.id), name=self._run_name)
         return run.id
 
-    async def _create_completion(self, **kwargs: Any) -> Any:
-        """Core async implementation for chat.completions.create.
-
-        Steps:
-        1. Ensure the Run exists.
-        2. Assign a monotonic sequence number.
-        3. Record the Step (inputs captured, outputs=None initially).
-        4. Call the real OpenAI client.
-        5. Update the Step with outputs, tokens, cost, and latency.
-        6. Return the raw response.
-
-        If the provider call raises, the failure is recorded and the
-        original exception is re-raised.
-
-        Args:
-            **kwargs: Forwarded verbatim to ``openai.OpenAI().chat.completions.create``.
-
-        Returns:
-            The raw ``ChatCompletion`` object from the OpenAI SDK.
-
-        Raises:
-            RateLimitError: Wrapping a 429 from the provider.
-            CaptureError: Wrapping any other provider error.
-        """
+    async def _create_message(self, **kwargs: Any) -> Any:
+        """Core async implementation for messages.create."""
         run_id = await self._ensure_run()
         seq = self._next_sequence_number()
         model: str = kwargs.get("model", "unknown")
@@ -245,7 +185,7 @@ class TetheredOpenAI:
             run_id=run_id,
             sequence_number=seq,
             kind=StepKind.LLM_CALL,
-            provider=Provider.OPENAI,
+            provider=Provider.ANTHROPIC,
             model=model,
             inputs=dict(kwargs),
         )
@@ -260,25 +200,18 @@ class TetheredOpenAI:
 
         start = time.perf_counter()
         try:
-            response = self._client.chat.completions.create(**kwargs)
-        except openai.RateLimitError as exc:
+            response = self._client.messages.create(**kwargs)
+        except anthropic.RateLimitError as exc:
             await self._record_provider_failure(
-                run_id=run_id,
-                step=step,
-                exc=exc,
-                error_type="RateLimitError",
+                run_id=run_id, step=step, exc=exc, error_type="RateLimitError"
             )
             raise RateLimitError(
-                f"Provider rate limit hit on run {run_id} step {step.id} (model={model}). "
-                "Enable recovery to retry automatically.",
+                f"Provider rate limit hit on run {run_id} step {step.id} (model={model}).",
                 original_error=exc,
             ) from exc
-        except openai.APIError as exc:
+        except anthropic.APIError as exc:
             await self._record_provider_failure(
-                run_id=run_id,
-                step=step,
-                exc=exc,
-                error_type=type(exc).__name__,
+                run_id=run_id, step=step, exc=exc, error_type=type(exc).__name__
             )
             raise CaptureError(
                 f"Provider error on run {run_id} step {step.id} (model={model}): {exc}",
@@ -288,16 +221,14 @@ class TetheredOpenAI:
         latency_ms = (time.perf_counter() - start) * 1000
         completed_at = datetime.now(UTC)
 
-        # Extract token usage from the response.
         usage = getattr(response, "usage", None)
-        input_tokens: int | None = getattr(usage, "prompt_tokens", None)
-        output_tokens: int | None = getattr(usage, "completion_tokens", None)
+        input_tokens: int | None = getattr(usage, "input_tokens", None)
+        output_tokens: int | None = getattr(usage, "output_tokens", None)
 
         cost: Decimal | None = None
         if input_tokens is not None and output_tokens is not None:
             cost = _compute_cost(model, input_tokens, output_tokens)
 
-        # Serialize the response to a plain dict for storage.
         try:
             outputs = response.model_dump()
         except AttributeError:
@@ -335,32 +266,19 @@ class TetheredOpenAI:
         exc: Exception,
         error_type: str,
     ) -> None:
-        """Persist a FailureRecord for a provider exception.
-
-        Also updates the step with the error details so the run history
-        reflects what went wrong.
-
-        Args:
-            run_id: The parent Run's UUID.
-            step: The Step that was in-flight.
-            exc: The exception raised by the provider.
-            error_type: Human-readable exception class name.
-        """
         error_dict = {"type": error_type, "message": str(exc)}
         error_step = step.model_copy(
             update={"error": error_dict, "completed_at": datetime.now(UTC)}
         )
         await self._storage.record_step(error_step)
-
         failure = FailureRecord(
             run_id=run_id,
             step_id=step.id,
             error_type=error_type,
             error_message=str(exc),
-            provider=Provider.OPENAI,
+            provider=Provider.ANTHROPIC,
         )
         await self._storage.record_failure(failure)
-
         log.error(
             "llm_call_failed",
             run_id=str(run_id),
@@ -375,48 +293,32 @@ class TetheredOpenAI:
 # ---------------------------------------------------------------------------
 
 
-class _AsyncCompletionsNamespace:
-    """Mirrors openai.resources.chat.completions for the tethered async client."""
+class _AsyncMessagesNamespace:
+    """Mirrors anthropic.resources.Messages for the tethered async client."""
 
-    def __init__(self, owner: AsyncTetheredOpenAI) -> None:
+    def __init__(self, owner: AsyncTetheredAnthropic) -> None:
         self._owner = owner
 
     async def create(self, **kwargs: Any) -> Any:
-        """Record and forward a chat completion request (async)."""
-        return await self._owner._create_completion(**kwargs)
+        """Record and forward a messages.create request (async)."""
+        return await self._owner._create_message(**kwargs)
 
 
-class _AsyncChatNamespace:
-    def __init__(self, owner: AsyncTetheredOpenAI) -> None:
-        self.completions = _AsyncCompletionsNamespace(owner)
+class AsyncTetheredAnthropic:
+    """Async drop-in Anthropic client wrapper that records every call to SQLite.
 
-
-class AsyncTetheredOpenAI:
-    """Async drop-in OpenAI client wrapper that records every LLM call to SQLite.
-
-    Use inside async code with ``await tethered.chat.completions.create(...)``.
+    Use inside async code with ``await tethered.messages.create(...)``.
 
     Args:
-        client: An initialized ``openai.AsyncOpenAI`` instance.
+        client: An initialized ``anthropic.AsyncAnthropic`` instance.
         storage: An initialized ``SQLiteStorage`` instance.
         run_name: Human-readable label for this agent run.
         run_id: Optional existing run UUID to resume.
-
-    Example:
-        tethered = AsyncTetheredOpenAI(
-            client=AsyncOpenAI(),
-            storage=storage,
-            run_name="research_agent_v1",
-        )
-        response = await tethered.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": "Hello"}],
-        )
     """
 
     def __init__(
         self,
-        client: openai.AsyncOpenAI,
+        client: anthropic.AsyncAnthropic,
         storage: SQLiteStorage,
         run_name: str,
         run_id: UUID | None = None,
@@ -427,7 +329,7 @@ class AsyncTetheredOpenAI:
         self._run_id: UUID | None = run_id
         self._sequence_lock = Lock()
         self._sequence_counter: int = 0
-        self.chat = _AsyncChatNamespace(self)
+        self.messages = _AsyncMessagesNamespace(self)
 
     @property
     def run_id(self) -> UUID | None:
@@ -449,8 +351,8 @@ class AsyncTetheredOpenAI:
         log.info("run_created", run_id=str(run.id), name=self._run_name)
         return run.id
 
-    async def _create_completion(self, **kwargs: Any) -> Any:
-        """Core async implementation — awaits the AsyncOpenAI client directly."""
+    async def _create_message(self, **kwargs: Any) -> Any:
+        """Core async implementation — awaits the AsyncAnthropic client directly."""
         run_id = await self._ensure_run()
         seq = self._next_sequence_number()
         model: str = kwargs.get("model", "unknown")
@@ -459,7 +361,7 @@ class AsyncTetheredOpenAI:
             run_id=run_id,
             sequence_number=seq,
             kind=StepKind.LLM_CALL,
-            provider=Provider.OPENAI,
+            provider=Provider.ANTHROPIC,
             model=model,
             inputs=dict(kwargs),
         )
@@ -474,17 +376,16 @@ class AsyncTetheredOpenAI:
 
         start = time.perf_counter()
         try:
-            response = await self._client.chat.completions.create(**kwargs)
-        except openai.RateLimitError as exc:
+            response = await self._client.messages.create(**kwargs)
+        except anthropic.RateLimitError as exc:
             await self._record_provider_failure(
                 run_id=run_id, step=step, exc=exc, error_type="RateLimitError"
             )
             raise RateLimitError(
-                f"Provider rate limit hit on run {run_id} step {step.id} (model={model}). "
-                "Enable recovery to retry automatically.",
+                f"Provider rate limit hit on run {run_id} step {step.id} (model={model}).",
                 original_error=exc,
             ) from exc
-        except openai.APIError as exc:
+        except anthropic.APIError as exc:
             await self._record_provider_failure(
                 run_id=run_id, step=step, exc=exc, error_type=type(exc).__name__
             )
@@ -497,8 +398,8 @@ class AsyncTetheredOpenAI:
         completed_at = datetime.now(UTC)
 
         usage = getattr(response, "usage", None)
-        input_tokens: int | None = getattr(usage, "prompt_tokens", None)
-        output_tokens: int | None = getattr(usage, "completion_tokens", None)
+        input_tokens: int | None = getattr(usage, "input_tokens", None)
+        output_tokens: int | None = getattr(usage, "output_tokens", None)
 
         cost: Decimal | None = None
         if input_tokens is not None and output_tokens is not None:
@@ -551,7 +452,7 @@ class AsyncTetheredOpenAI:
             step_id=step.id,
             error_type=error_type,
             error_message=str(exc),
-            provider=Provider.OPENAI,
+            provider=Provider.ANTHROPIC,
         )
         await self._storage.record_failure(failure)
         log.error(

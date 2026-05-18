@@ -26,7 +26,8 @@ Quick start:
     asyncio.run(main())
 """
 
-from tether.capture.openai import TetheredOpenAI
+from tether.capture.anthropic import AsyncTetheredAnthropic, TetheredAnthropic
+from tether.capture.openai import AsyncTetheredOpenAI, TetheredOpenAI
 from tether.core.models import (
     Checkpoint,
     FailureRecord,
@@ -48,12 +49,15 @@ from tether.exceptions import (
     TetherError,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "Venkata Manideep Patibandla"
 
 __all__ = [
     # Main API
     "TetheredOpenAI",
+    "AsyncTetheredOpenAI",
+    "TetheredAnthropic",
+    "AsyncTetheredAnthropic",
     "SQLiteStorage",
     # Models
     "Run",
